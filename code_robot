@@ -1,1 +1,315 @@
+#include <AccelStepper.h>
+#include <MultiStepper.h>
+#include <dhtnew.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP3XX.h>
+#include <math.h>
+
+// Valeur à ajuster selon l'environnement
+const int SEALEVELPRESSURE_HPA = 1013;
+// Pin pour la puce SD
+const int CHIP_PIN_SELECT = 53;
+// Pin pour le bouton
+//const int PIN_BOUTON = 2;- pu de bouton
+// Pin pour les senseurs
+const int PIN_DHT = 3;
+//constante de pas des moteurs, 1 pas complet
+const int FULLSTEP  = 4;
+//vitesse des moteurs
+const int maxSpeed = 400;
+const int maxSpeedd = 500;
+// Pin de la Photoresistance
+const int PHOTORESISTOR = A0;
+//Nom du fichier texte
+const char * NOM_FICHIER_SORTIE = "test.txt";
+//distance à monter en centimètres, à changer avec la hauteur de l'arbre
+const int DISTANCE_A_MONTER_CM = 1500;
+//distance des intervalles de la descente en centimètres
+const int DISTANCE_A_DESCENDRE_CM = 50;
+//delai avant le départ
+const int startup_delay = 1;
+//temps entre la prise de donnée
+const int intervalle_donnees = 2500;
+// Altitude du robot(seulement mis a jour lors de la descente)
+int AltitudeCourante = 0;
+
+enum eSetupD // si la configuration des moteurs a été fait pour la descente
+{
+ FAIT,
+ PAS_FAIT
+};
+
+enum eDirection  // l'état du robot, s'il monte ou s'il descend
+{
+  MONTER,
+  DESCENDRE
+};
+
+enum eMoveInstruction // si la configuration du nombre de tour pour une intervalle de descente à été donné ou non
+{
+ GIVEN,
+ NOT_GIVEN
+};
+
+// Variables
+AccelStepper stepper1(FULLSTEP, 22, 24, 23, 25); //configuration des pins pour le moteur 1
+AccelStepper stepper2(FULLSTEP, 32, 34, 33, 35); //configuration des pins pour le moteur 2
+DHTNEW dht(PIN_DHT); // humidité et température
+Adafruit_BMP3XX bmp; // altitude
+eDirection direction = MONTER;
+eSetupD setupD = PAS_FAIT;
+eMoveInstruction moveInstruction = NOT_GIVEN;
+
+
+float CalculerHauteurCM(float nbTours) //transforme un nombre de tours en hauteur
+{
+	return nbTours * nbTours * 0.00167f + 9.37f * nbTours /*+ 3.17e-11*/;
+}
+
+float CalculerNbTours(float hauteurCM) //transforme  une hauteur en nombre de tours
+{
+	return (-9.37f + sqrtf(87.7969f + 0.00668f * hauteurCM)) / 0.00334f; // c'est quoi f?
+}
+
+void log(File& fichier, float valeur) //pour imprimer les valeurs des capteurs dans le fichier et dans le terminal
+{
+  fichier.print(valeur);
+  Serial.print(valeur);
+}
+
+void log(File& fichier,const char * valeur)
+{
+  fichier.print(valeur);
+  Serial.print(valeur);
+}
+
+void log(File& fichier, unsigned long valeur)
+{
+  fichier.print(valeur);
+  Serial.print(valeur);
+}
+
+void log(File& fichier, int valeur)
+{
+  fichier.print(valeur);
+  Serial.print(valeur);
+}
+
+void log(File& fichier, double valeur)
+{
+  fichier.print(valeur);
+  Serial.print(valeur);
+}
+
+void fin()
+{
+  while(1){
+  };  // boucle infinie pour cesser l'exécution
+}
+
+void setup()
+{
+  delay(startup_delay);
+  Serial.begin(115200);
+
+  if (!SD.begin(CHIP_PIN_SELECT)) //initialisation de la carte SD
+  {
+    Serial.println("Card failed, or not present");
+    fin();
+  }
+
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X); //initiallisation des paramètres du baromètre
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+  bmp.begin_I2C();
+
+  
+  
+  //pinMode(PIN_BOUTON,INPUT_PULLUP); //initialisation d'un bouton au besoin
+ // digitalWrite(PIN_BOUTON,HIGH);
+
+  pinMode(PHOTORESISTOR,INPUT_PULLUP); //initialisation de la photoresistance
+
+  File fichier = SD.open(NOM_FICHIER_SORTIE, FILE_WRITE);//on ouvre un fichier et on écrit la première ligne
+  /*if(fichier)
+  {
+    log(fichier, "altitude(cm),secondes,luminosite,temp1,%humidity,temp2,pressure(hpa),altitude(m)\n"); 
+    fichier.close();
+    Serial.println("Setup terminé, prêt!");
+  }
+  else
+  {
+    Serial.println("file not opened");
+    fin();
+  }
+
+  setupMonte();// configuration des moteurs pour la montée*/
+}
+
+void loop() // conditions pour la séquence, si on est dans la séquence de montée, le robot monte, sinon on descend. si l'altitude est à 0, on tombe dans une loop infinie et la séquence se termine
+{
+  if( direction == MONTER )
+  {
+    monter();    
+  }
+  else if(AltitudeCourante > 0)
+  {
+    descendre();
+    //Serial.println("descente()");
+  }
+}
+
+void monter()
+{
+  if(stepper2.currentPosition()<stepper2.targetPosition() )//si la position initiale est plus petite que la position désirée
+  {
+    stepper1.run(); //on fait un pas avec les moteurs
+    stepper2.run();  
+  }
+  else
+  {
+    AltitudeCourante = DISTANCE_A_MONTER_CM; // on fait correspondre la distance à monter à l'altitude
+    direction = DESCENDRE;// on tombe dans le mode descente
+  }
+}
+
+float moyenne( float valeurs[], int numValeurs, float plancher ) // formule de moyenne pour calculer les valeurs du DHT
+{
+  float somme = 0;
+  int numValeursValides = 0;
+  for( int i = 0; i < numValeurs; ++i )
+  {
+    if( valeurs[i] > plancher )
+    {
+      somme += valeurs[i];
+      numValeursValides++;
+    }
+  }
+  if(numValeursValides > 0)
+  {
+    return somme / numValeursValides;
+  }
+  else
+  {
+    return NAN;
+  }
+}
+
+void descendre()
+{
+  // Serial.println("descendre()");
+  
+  if(setupD == PAS_FAIT)  // on s'assure de configurer les moteurs seulement une fois pour la descente
+  {
+   setupDescente(); // configuration des moteurs pour la descente
+   setupD = FAIT;
+  }
+  
+
+  if(moveInstruction == NOT_GIVEN) // si l'ordre de faire un tour n'a pas été donnée, on la donne
+  {
+   stepper1.move(2048* CalculerNbTours(DISTANCE_A_DESCENDRE_CM)); // dit au moteurs de descendre la hauteur d'un intervalle
+   stepper2.move(-2048* CalculerNbTours(DISTANCE_A_DESCENDRE_CM));
+   moveInstruction = GIVEN; // on dit que l'ordre de faire un tour a été donnée
+  }
+   
+  stepper1.run();
+  stepper2.run();
+
+  /*if(stepper1.isRunning()== 0 && stepper2.isRunning()== 0) // on vérifie quand que les moteurs s'arrêtent avant de pouvoir prendre des données
+  //{
+  //  File fichier = SD.open(NOM_FICHIER_SORTIE, FILE_WRITE);// on réouvre le fichier
+    //if(!fichier)
+   // {
+   //   log(fichier,"Erreur: fichier non-ouvert dans descendre().");
+    //  log(fichier, "\n");     
+    //} 
+    else
+    //{
+    //  const int cNumEchantillons = 10; // nombre d'échantillons à prendre pour le DHT
+    //  float tempsDHT[cNumEchantillons] = {}; // array pour la température
+     // float humiditesDHT[cNumEchantillons] = {}; // array pour l'humidité, array=list
+
+     // for( int i = 0; i < cNumEchantillons; ++i ) // on fill les arrays de temperature et d'humidité
+     // {
+        dht.read();  // on prends une lecture du capteur
+        delay(100);
+        tempsDHT[i] = dht.getTemperature();  
+        humiditesDHT[i] = dht.getHumidity();
+      }
+
+      int luminosite = analogRead(PHOTORESISTOR); // lecture de luminosité
+
+      log(fichier, AltitudeCourante); //on log toutes les valeurs prises par les capteurs
+      log(fichier, ",");
+      float secondes = millis()/1000;
+      log(fichier, secondes);
+      log(fichier, ",");
+      log(fichier, 1020 - luminosite);
+      log(fichier, ",");
+
+      log(fichier, moyenne(tempsDHT, cNumEchantillons, 0));
+      log(fichier, ",");
+      log(fichier, moyenne(humiditesDHT, cNumEchantillons, 0));
+      log(fichier, ",");
+      
+      log(fichier, bmp.readTemperature());
+      log(fichier, ",");
+      log(fichier, bmp.readPressure() / 100.0);
+      log(fichier, ",");
+      log(fichier, bmp.readAltitude(SEALEVELPRESSURE_HPA));
+
+      /*
+      bmp.performReading();
+      delay(100);
+      log(fichier, bmp.temperature);
+      log(fichier, ",");
+      log(fichier, bmp.pressure / 100.0);
+      log(fichier, ",");
+      log(fichier, bmp.readAltitude(SEALEVELPRESSURE_HPA));
+      */
+
+      /*(log(fichier, "\n");
+      //Serial.println("rolling done");
+      //Serial.println("Data sampling done");
+      fichier.close(); //on ferme le fichier pour conserver les données
+      delay(intervalle_donnees);
+    } 
+
+    moveInstruction = NOT_GIVEN; // on recommence la boucle de prise de données en changeant la condition 
+    AltitudeCourante -= DISTANCE_A_DESCENDRE_CM; // on soustrait la distance descendue à l'altitude totale
+  }  */
+}
+
+void setupMonte() // setup des moteurs pour la montée, les vitesses ont des directions
+{
+ 
+  stepper1.setMaxSpeed(-maxSpeed);
+  stepper1.setSpeed(-maxSpeed);
+  stepper1.setAcceleration(5000);
+
+  stepper2.setMaxSpeed(maxSpeed);
+  stepper2.setSpeed(maxSpeed);
+  stepper2.setAcceleration(5000);
+
+  stepper1.setCurrentPosition(0);
+  stepper2.setCurrentPosition(0);
+  stepper1.move(-2048 * CalculerNbTours(DISTANCE_A_MONTER_CM));
+  stepper2.move(2048 * CalculerNbTours(DISTANCE_A_MONTER_CM));
+}
+
+void setupDescente() // setup des moteurs pour la descente, les vitesses ont des directions
+{
+  stepper1.setMaxSpeed(maxSpeedd);
+  stepper1.setSpeed(maxSpeedd);
+  stepper1.setAcceleration(5000);
+
+  stepper2.setMaxSpeed(-maxSpeedd);
+  stepper2.setSpeed(-maxSpeedd);
+  stepper2.setAcceleration(5000);
+}
 
