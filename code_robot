@@ -1,12 +1,12 @@
-#include <AccelStepper.h>
-#include <MultiStepper.h>
-#include <dhtnew.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <SD.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BMP3XX.h>
-#include <math.h>
+include <AccelStepper.h>
+include <MultiStepper.h>
+include <dhtnew.h>
+include <Wire.h>
+include <SPI.h>
+include <SD.h>
+include <Adafruit_Sensor.h>
+include <Adafruit_BMP3XX.h>
+include <math.h>
 
 // Valeur à ajuster selon l'environnement
 const int SEALEVELPRESSURE_HPA = 1013;
